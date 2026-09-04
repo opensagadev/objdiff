@@ -197,6 +197,100 @@ pub struct DiffObjsResult {
     pub prev: Option<ObjectDiff>,
 }
 
+fn diffable_symbol_by_name(obj: &Object, name: &str) -> Option<usize> {
+    obj.symbols.iter().position(|symbol| {
+        symbol.name == name
+            && (symbol.section.is_some() || symbol.flags.contains(SymbolFlag::Common))
+    })
+}
+
+/// Diff a single named symbol while preserving the object-wide symbol and section indexes.
+///
+/// This is intended for consumers that only need one symbol's detailed diff. The returned
+/// [`ObjectDiff`] values still contain placeholder entries for every symbol and section so that
+/// indexes in relocations and `target_symbol` remain valid, but no unrelated symbols or sections
+/// are diffed.
+pub fn diff_objs_for_symbol(
+    left: Option<&Object>,
+    right: Option<&Object>,
+    symbol_name: &str,
+    diff_config: &DiffObjConfig,
+    mapping_config: &MappingConfig,
+) -> Result<DiffObjsResult> {
+    let left_symbol_idx = left.and_then(|obj| diffable_symbol_by_name(obj, symbol_name));
+    let right_symbol_idx = match (left, right, left_symbol_idx) {
+        (Some(left_obj), Some(right_obj), Some(left_idx)) => mapping_config
+            .mappings
+            .get(symbol_name)
+            .and_then(|right_name| diffable_symbol_by_name(right_obj, right_name))
+            .or_else(|| find_symbol(Some(right_obj), left_obj, left_idx, None, false)),
+        (_, Some(right_obj), _) => diffable_symbol_by_name(right_obj, symbol_name),
+        _ => None,
+    };
+
+    if left_symbol_idx.is_none() && right_symbol_idx.is_none() {
+        return Err(anyhow!("Symbol not found: {symbol_name}"));
+    }
+
+    let left_kind =
+        left_symbol_idx.map(|idx| symbol_section_kind(left.unwrap(), &left.unwrap().symbols[idx]));
+    let right_kind = right_symbol_idx
+        .map(|idx| symbol_section_kind(right.unwrap(), &right.unwrap().symbols[idx]));
+    if let (Some(left_kind), Some(right_kind)) = (left_kind, right_kind)
+        && left_kind != right_kind
+    {
+        return Err(anyhow!(
+            "Symbol section kind mismatch: {symbol_name} ({left_kind:?} vs {right_kind:?})"
+        ));
+    }
+    let section_kind = left_kind.or(right_kind).unwrap_or(SectionKind::Unknown);
+    if section_kind == SectionKind::Unknown {
+        return Err(anyhow!("Symbol has no diffable section: {symbol_name}"));
+    }
+
+    let mut left_diff = left.map(ObjectDiff::new_from_obj);
+    let mut right_diff = right.map(ObjectDiff::new_from_obj);
+    match (left_symbol_idx, right_symbol_idx) {
+        (Some(left_idx), Some(right_idx)) => {
+            let (left_symbol_diff, right_symbol_diff) = match section_kind {
+                SectionKind::Code => {
+                    diff_code(left.unwrap(), right.unwrap(), left_idx, right_idx, diff_config)
+                }
+                SectionKind::Data => {
+                    diff_data_symbol(left.unwrap(), right.unwrap(), left_idx, right_idx)
+                }
+                SectionKind::Bss | SectionKind::Common => {
+                    diff_bss_symbol(left.unwrap(), right.unwrap(), left_idx, right_idx)
+                }
+                SectionKind::Unknown => unreachable!(),
+            }?;
+            left_diff.as_mut().unwrap().symbols[left_idx] = left_symbol_diff;
+            right_diff.as_mut().unwrap().symbols[right_idx] = right_symbol_diff;
+        }
+        (Some(left_idx), None) => {
+            let symbol_diff = match section_kind {
+                SectionKind::Code => no_diff_code(left.unwrap(), left_idx, diff_config),
+                SectionKind::Data => no_diff_data_symbol(left.unwrap(), left_idx),
+                SectionKind::Bss | SectionKind::Common => Ok(SymbolDiff::default()),
+                SectionKind::Unknown => unreachable!(),
+            }?;
+            left_diff.as_mut().unwrap().symbols[left_idx] = symbol_diff;
+        }
+        (None, Some(right_idx)) => {
+            let symbol_diff = match section_kind {
+                SectionKind::Code => no_diff_code(right.unwrap(), right_idx, diff_config),
+                SectionKind::Data => no_diff_data_symbol(right.unwrap(), right_idx),
+                SectionKind::Bss | SectionKind::Common => Ok(SymbolDiff::default()),
+                SectionKind::Unknown => unreachable!(),
+            }?;
+            right_diff.as_mut().unwrap().symbols[right_idx] = symbol_diff;
+        }
+        (None, None) => unreachable!(),
+    }
+
+    Ok(DiffObjsResult { left: left_diff, right: right_diff, prev: None })
+}
+
 pub fn diff_objs(
     left: Option<&Object>,
     right: Option<&Object>,

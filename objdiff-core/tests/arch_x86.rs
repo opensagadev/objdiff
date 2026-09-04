@@ -22,6 +22,107 @@ fn read_x86() {
 
 #[test]
 #[cfg(feature = "x86")]
+fn diff_single_x86_symbol() {
+    let diff_config = diff::DiffObjConfig::default();
+    let obj = obj::read::parse(
+        include_object!("data/x86/staticdebug.obj"),
+        &diff_config,
+        diff::DiffSide::Target,
+    )
+    .unwrap();
+    let symbol_name = "?PrintThing@@YAXXZ";
+    let symbol_idx = obj.symbol_by_name(symbol_name).unwrap();
+
+    let result = diff::diff_objs_for_symbol(
+        Some(&obj),
+        Some(&obj),
+        symbol_name,
+        &diff_config,
+        &diff::MappingConfig::default(),
+    )
+    .unwrap();
+    let left = result.left.unwrap();
+    let right = result.right.unwrap();
+
+    assert_eq!(left.symbols.len(), obj.symbols.len());
+    assert_eq!(right.symbols.len(), obj.symbols.len());
+    assert_eq!(left.symbols[symbol_idx].target_symbol, Some(symbol_idx));
+    assert_eq!(right.symbols[symbol_idx].target_symbol, Some(symbol_idx));
+    assert!(!left.symbols[symbol_idx].instruction_rows.is_empty());
+    assert!(!right.symbols[symbol_idx].instruction_rows.is_empty());
+    assert!(left.sections.iter().all(|section| section.data_diff.is_empty()));
+    assert!(right.sections.iter().all(|section| section.data_diff.is_empty()));
+    assert!(
+        left.symbols
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != symbol_idx)
+            .all(|(_, symbol)| symbol.instruction_rows.is_empty())
+    );
+    assert!(
+        right
+            .symbols
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != symbol_idx)
+            .all(|(_, symbol)| symbol.instruction_rows.is_empty())
+    );
+}
+
+#[test]
+#[cfg(feature = "x86")]
+fn diff_single_symbol_falls_back_from_missing_mapping() {
+    let diff_config = diff::DiffObjConfig::default();
+    let obj = obj::read::parse(
+        include_object!("data/x86/staticdebug.obj"),
+        &diff_config,
+        diff::DiffSide::Target,
+    )
+    .unwrap();
+    let symbol_name = "?PrintThing@@YAXXZ";
+    let symbol_idx = obj.symbol_by_name(symbol_name).unwrap();
+    let mut mapping_config = diff::MappingConfig::default();
+    mapping_config.mappings.insert(symbol_name.into(), "missing".into());
+
+    let result = diff::diff_objs_for_symbol(
+        Some(&obj),
+        Some(&obj),
+        symbol_name,
+        &diff_config,
+        &mapping_config,
+    )
+    .unwrap();
+
+    assert_eq!(result.left.unwrap().symbols[symbol_idx].target_symbol, Some(symbol_idx));
+    assert_eq!(result.right.unwrap().symbols[symbol_idx].target_symbol, Some(symbol_idx));
+}
+
+#[test]
+fn diff_single_common_symbol() {
+    let common_symbol = obj::Symbol {
+        name: "common".into(),
+        size: 4,
+        flags: obj::SymbolFlag::Common.into(),
+        ..Default::default()
+    };
+    let left = obj::Object { symbols: vec![common_symbol.clone()], ..Default::default() };
+    let right = obj::Object { symbols: vec![common_symbol], ..Default::default() };
+
+    let result = diff::diff_objs_for_symbol(
+        Some(&left),
+        Some(&right),
+        "common",
+        &diff::DiffObjConfig::default(),
+        &diff::MappingConfig::default(),
+    )
+    .unwrap();
+
+    assert_eq!(result.left.unwrap().symbols[0].target_symbol, Some(0));
+    assert_eq!(result.right.unwrap().symbols[0].target_symbol, Some(0));
+}
+
+#[test]
+#[cfg(feature = "x86")]
 fn read_x86_combine_sections() {
     let diff_config = diff::DiffObjConfig {
         combine_data_sections: true,
