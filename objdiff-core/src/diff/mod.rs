@@ -12,8 +12,9 @@ use crate::{
     diff::{
         code::{diff_code, no_diff_code},
         data::{
-            diff_bss_section, diff_bss_symbol, diff_data_section, diff_data_symbol,
-            diff_generic_section, no_diff_bss_section, no_diff_data_section, no_diff_data_symbol,
+            diff_bss_section, diff_bss_symbol, diff_data_section, diff_data_section_summary,
+            diff_data_symbol, diff_generic_section, no_diff_bss_section, no_diff_data_section,
+            no_diff_data_symbol,
         },
     },
     obj::{
@@ -298,6 +299,28 @@ pub fn diff_objs(
     diff_config: &DiffObjConfig,
     mapping_config: &MappingConfig,
 ) -> Result<DiffObjsResult> {
+    diff_objs_impl(left, right, prev, diff_config, mapping_config, false)
+}
+
+/// Diff objects for a progress report without retaining detailed instruction or data edits.
+pub fn diff_objs_summary(
+    left: Option<&Object>,
+    right: Option<&Object>,
+    prev: Option<&Object>,
+    diff_config: &DiffObjConfig,
+    mapping_config: &MappingConfig,
+) -> Result<DiffObjsResult> {
+    diff_objs_impl(left, right, prev, diff_config, mapping_config, true)
+}
+
+fn diff_objs_impl(
+    left: Option<&Object>,
+    right: Option<&Object>,
+    prev: Option<&Object>,
+    diff_config: &DiffObjConfig,
+    mapping_config: &MappingConfig,
+    summary: bool,
+) -> Result<DiffObjsResult> {
     let symbol_matches = matching_symbols(left, right, prev, mapping_config)?;
     let section_matches = matching_sections(left, right)?;
     let mut left = left.map(|p| (p, ObjectDiff::new_from_obj(p)));
@@ -316,13 +339,17 @@ pub fn diff_objs(
                 let (right_obj, right_out) = right.as_mut().unwrap();
                 match section_kind {
                     SectionKind::Code => {
-                        let (left_diff, right_diff) = diff_code(
+                        let (mut left_diff, mut right_diff) = diff_code(
                             left_obj,
                             right_obj,
                             left_symbol_ref,
                             right_symbol_ref,
                             diff_config,
                         )?;
+                        if summary {
+                            left_diff.instruction_rows.clear();
+                            right_diff.instruction_rows.clear();
+                        }
                         left_out.symbols[left_symbol_ref] = left_diff;
                         right_out.symbols[right_symbol_ref] = right_diff;
 
@@ -339,12 +366,16 @@ pub fn diff_objs(
                         }
                     }
                     SectionKind::Data => {
-                        let (left_diff, right_diff) = diff_data_symbol(
+                        let (mut left_diff, mut right_diff) = diff_data_symbol(
                             left_obj,
                             right_obj,
                             left_symbol_ref,
                             right_symbol_ref,
                         )?;
+                        if summary {
+                            left_diff.data_rows.clear();
+                            right_diff.data_rows.clear();
+                        }
                         left_out.symbols[left_symbol_ref] = left_diff;
                         right_out.symbols[right_symbol_ref] = right_diff;
                     }
@@ -365,12 +396,16 @@ pub fn diff_objs(
                 let (left_obj, left_out) = left.as_mut().unwrap();
                 match section_kind {
                     SectionKind::Code => {
-                        left_out.symbols[left_symbol_ref] =
-                            no_diff_code(left_obj, left_symbol_ref, diff_config)?;
+                        if !summary {
+                            left_out.symbols[left_symbol_ref] =
+                                no_diff_code(left_obj, left_symbol_ref, diff_config)?;
+                        }
                     }
                     SectionKind::Data => {
-                        left_out.symbols[left_symbol_ref] =
-                            no_diff_data_symbol(left_obj, left_symbol_ref)?;
+                        if !summary {
+                            left_out.symbols[left_symbol_ref] =
+                                no_diff_data_symbol(left_obj, left_symbol_ref)?;
+                        }
                     }
                     SectionKind::Bss | SectionKind::Common => {
                         // Nothing needs to be done
@@ -382,12 +417,16 @@ pub fn diff_objs(
                 let (right_obj, right_out) = right.as_mut().unwrap();
                 match section_kind {
                     SectionKind::Code => {
-                        right_out.symbols[right_symbol_ref] =
-                            no_diff_code(right_obj, right_symbol_ref, diff_config)?;
+                        if !summary {
+                            right_out.symbols[right_symbol_ref] =
+                                no_diff_code(right_obj, right_symbol_ref, diff_config)?;
+                        }
                     }
                     SectionKind::Data => {
-                        right_out.symbols[right_symbol_ref] =
-                            no_diff_data_symbol(right_obj, right_symbol_ref)?;
+                        if !summary {
+                            right_out.symbols[right_symbol_ref] =
+                                no_diff_data_symbol(right_obj, right_symbol_ref)?;
+                        }
                     }
                     SectionKind::Bss | SectionKind::Common => {
                         // Nothing needs to be done
@@ -424,14 +463,25 @@ pub fn diff_objs(
                         right_out.sections[right_section_idx] = right_diff;
                     }
                     SectionKind::Data => {
-                        let (left_diff, right_diff) = diff_data_section(
-                            left_obj,
-                            right_obj,
-                            left_out,
-                            right_out,
-                            left_section_idx,
-                            right_section_idx,
-                        )?;
+                        let (left_diff, right_diff) = if summary {
+                            diff_data_section_summary(
+                                left_obj,
+                                right_obj,
+                                left_out,
+                                right_out,
+                                left_section_idx,
+                                right_section_idx,
+                            )
+                        } else {
+                            diff_data_section(
+                                left_obj,
+                                right_obj,
+                                left_out,
+                                right_out,
+                                left_section_idx,
+                                right_section_idx,
+                            )
+                        }?;
                         left_out.sections[left_section_idx] = left_diff;
                         right_out.sections[right_section_idx] = right_diff;
                     }
@@ -455,8 +505,15 @@ pub fn diff_objs(
                 match section_kind {
                     SectionKind::Code => {}
                     SectionKind::Data => {
-                        left_out.sections[left_section_idx] =
-                            no_diff_data_section(left_obj, left_section_idx)?;
+                        left_out.sections[left_section_idx] = if summary {
+                            SectionDiff {
+                                match_percent: Some(0.0),
+                                data_diff: vec![],
+                                reloc_diff: vec![],
+                            }
+                        } else {
+                            no_diff_data_section(left_obj, left_section_idx)?
+                        };
                     }
                     SectionKind::Bss | SectionKind::Common => {
                         left_out.sections[left_section_idx] = no_diff_bss_section()?;
@@ -469,8 +526,15 @@ pub fn diff_objs(
                 match section_kind {
                     SectionKind::Code => {}
                     SectionKind::Data => {
-                        right_out.sections[right_section_idx] =
-                            no_diff_data_section(right_obj, right_section_idx)?;
+                        right_out.sections[right_section_idx] = if summary {
+                            SectionDiff {
+                                match_percent: Some(0.0),
+                                data_diff: vec![],
+                                reloc_diff: vec![],
+                            }
+                        } else {
+                            no_diff_data_section(right_obj, right_section_idx)?
+                        };
                     }
                     SectionKind::Bss | SectionKind::Common => {
                         right_out.sections[right_section_idx] = no_diff_bss_section()?;
@@ -509,7 +573,8 @@ pub fn diff_objs(
         }
     }
 
-    if let Some((left_obj, left_out)) = left.as_mut()
+    if !summary
+        && let Some((left_obj, left_out)) = left.as_mut()
         && let Some((right_obj, right_out)) = right.as_mut()
     {
         let mut done_section_names = BTreeSet::new();
@@ -579,15 +644,18 @@ fn diff_order_for_section_name(
     let right_paired_symbols: Vec<_> = symbols_matching_section_name(right_obj, section_name)
         .filter(|(sym_idx, _)| right_paired_symbol_idxs.contains(sym_idx))
         .collect();
+    let right_order_by_symbol: BTreeMap<_, _> = right_paired_symbols
+        .iter()
+        .enumerate()
+        .map(|(order_idx, (symbol_idx, _))| (*symbol_idx, order_idx))
+        .collect();
 
     let mut expected_right_order_idx = 0;
     for (left_order_idx, (left_symbol_idx, _left_symbol)) in left_paired_symbols.iter().enumerate()
     {
         let right_symbol_idx = left_sym_idx_to_right_sym_idx.get(left_symbol_idx).unwrap();
-        let right_order_idx = right_paired_symbols
-            .iter()
-            .position(|(sym_idx, _)| sym_idx == right_symbol_idx)
-            .ok_or_else(|| {
+        let right_order_idx =
+            right_order_by_symbol.get(right_symbol_idx).copied().ok_or_else(|| {
                 anyhow!("Failed to find right side symbol for paired left side symbol")
             })?;
         if right_order_idx == left_order_idx {
@@ -808,6 +876,63 @@ fn apply_symbol_mappings(
     Ok(())
 }
 
+struct SymbolLookup {
+    by_name: BTreeMap<String, Vec<usize>>,
+    by_normalized_name: BTreeMap<String, Vec<usize>>,
+}
+
+impl SymbolLookup {
+    fn new(obj: &Object) -> Self {
+        let mut by_name = BTreeMap::<String, Vec<usize>>::new();
+        let mut by_normalized_name = BTreeMap::<String, Vec<usize>>::new();
+        for (symbol_idx, symbol) in obj.symbols.iter().enumerate() {
+            by_name.entry(symbol.name.clone()).or_default().push(symbol_idx);
+            if let Some(name) = &symbol.normalized_name {
+                by_normalized_name.entry(name.clone()).or_default().push(symbol_idx);
+            }
+        }
+        Self { by_name, by_normalized_name }
+    }
+}
+
+fn find_symbol_with_lookup(
+    obj: Option<&Object>,
+    lookup: Option<&SymbolLookup>,
+    in_obj: &Object,
+    in_symbol_idx: usize,
+    used: Option<&BTreeSet<usize>>,
+    fuzzy_literals: bool,
+) -> Option<usize> {
+    let in_symbol = &in_obj.symbols[in_symbol_idx];
+    let (section_name, section_kind) = symbol_section(in_obj, in_symbol)?;
+    if in_symbol.flags.contains(SymbolFlag::CompilerGenerated)
+        && matches!(section_kind, SectionKind::Code | SectionKind::Data | SectionKind::Bss)
+    {
+        return find_symbol(obj, in_obj, in_symbol_idx, used, fuzzy_literals);
+    }
+
+    let (Some(obj), Some(lookup)) = (obj, lookup) else { return None };
+    let by_name = lookup.by_name.get(&in_symbol.name).into_iter().flatten();
+    let by_normalized_name = in_symbol
+        .normalized_name
+        .as_ref()
+        .and_then(|name| lookup.by_normalized_name.get(name))
+        .into_iter()
+        .flatten();
+    by_name
+        .chain(by_normalized_name)
+        .copied()
+        .filter(|symbol_idx| !used.is_some_and(|used| used.contains(symbol_idx)))
+        .filter(|&symbol_idx| {
+            let symbol = &obj.symbols[symbol_idx];
+            !symbol.flags.contains(SymbolFlag::Ignored)
+                && symbol_name_matches(in_symbol, symbol)
+                && symbol_section_kind(obj, symbol) == section_kind
+                && symbol_section(obj, symbol).is_some_and(|(name, _)| name == section_name)
+        })
+        .min()
+}
+
 /// Find matching symbols between each object.
 fn matching_symbols(
     left: Option<&Object>,
@@ -818,6 +943,8 @@ fn matching_symbols(
     let mut matches = Vec::new();
     let mut left_used = BTreeSet::new();
     let mut right_used = BTreeSet::new();
+    let right_lookup = right.map(SymbolLookup::new);
+    let prev_lookup = prev.map(SymbolLookup::new);
     if let Some(left) = left {
         if let Some(right) = right {
             apply_symbol_mappings(
@@ -845,8 +972,22 @@ fn matching_symbols(
                 }
                 let symbol_match = SymbolMatch {
                     left: Some(symbol_idx),
-                    right: find_symbol(right, left, symbol_idx, Some(&right_used), fuzzy_literals),
-                    prev: find_symbol(prev, left, symbol_idx, None, fuzzy_literals),
+                    right: find_symbol_with_lookup(
+                        right,
+                        right_lookup.as_ref(),
+                        left,
+                        symbol_idx,
+                        Some(&right_used),
+                        fuzzy_literals,
+                    ),
+                    prev: find_symbol_with_lookup(
+                        prev,
+                        prev_lookup.as_ref(),
+                        left,
+                        symbol_idx,
+                        None,
+                        fuzzy_literals,
+                    ),
                     section_kind,
                 };
                 matches.push(symbol_match);
@@ -875,7 +1016,14 @@ fn matching_symbols(
                 let symbol_match = SymbolMatch {
                     left: None,
                     right: Some(symbol_idx),
-                    prev: find_symbol(prev, right, symbol_idx, None, fuzzy_literals),
+                    prev: find_symbol_with_lookup(
+                        prev,
+                        prev_lookup.as_ref(),
+                        right,
+                        symbol_idx,
+                        None,
+                        fuzzy_literals,
+                    ),
                     section_kind,
                 };
                 matches.push(symbol_match);
