@@ -1,3 +1,5 @@
+mod linked;
+
 use alloc::{boxed::Box, format, vec::Vec};
 use core::cmp::Ordering;
 
@@ -11,13 +13,27 @@ use object::{Endian as _, Object as _, ObjectSection as _, elf, pe};
 use crate::{
     arch::{Arch, OPCODE_DATA, RelocationOverride, RelocationOverrideTarget},
     diff::{DiffObjConfig, X86Formatter, display::InstructionPart},
-    obj::{InstructionRef, Relocation, RelocationFlags, ResolvedInstructionRef, Section, Symbol},
+    obj::{
+        InstructionArg, InstructionRef, RecoveredReference, RecoveredTarget, Relocation,
+        RelocationFlags, ResolvedInstructionRef, Section, Symbol,
+    },
 };
 
-#[derive(Debug)]
 pub struct ArchX86 {
     arch: Architecture,
     endianness: object::Endianness,
+    linked: linked::Linked,
+}
+
+impl core::fmt::Debug for ArchX86 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_struct("ArchX86");
+        d.field("arch", &self.arch).field("endianness", &self.endianness);
+        if !self.linked.references.is_empty() {
+            d.field("linked", &self.linked);
+        }
+        d.finish()
+    }
 }
 
 #[derive(Debug)]
@@ -33,7 +49,7 @@ impl ArchX86 {
             object::Architecture::X86_64 => Architecture::X86_64,
             _ => bail!("Unsupported architecture for ArchX86: {:?}", object.architecture()),
         };
-        Ok(Self { arch, endianness: object.endianness() })
+        Ok(Self { arch, endianness: object.endianness(), linked: Default::default() })
     }
 
     fn decoder<'a>(&self, code: &'a [u8], address: u64) -> Decoder<'a> {
@@ -102,6 +118,17 @@ impl ArchX86 {
 }
 
 impl Arch for ArchX86 {
+    fn has_recovered_reference(&self, resolved: ResolvedInstructionRef) -> bool {
+        self.linked.references.contains_key(&(resolved.symbol.address, resolved.ins_ref.address))
+    }
+
+    fn recover_linked(&mut self, file: &object::File, config: &DiffObjConfig) -> Result<()> {
+        if config.x86_recover_linked_got {
+            self.linked = linked::Linked::new(self, file);
+        }
+        Ok(())
+    }
+
     fn scan_instructions_internal(
         &self,
         address: u64,
@@ -266,8 +293,32 @@ impl Arch for ArchX86 {
             }
         }
 
-        let mut output =
-            InstructionFormatterOutput { cb, reloc_replace, error: None, skip_next: false };
+        let recovered = if diff_config.x86_recover_linked_got && resolved.relocation.is_none() {
+            self.linked.references.get(&(resolved.symbol.address, resolved.ins_ref.address))
+        } else {
+            None
+        };
+        if let Some(reference) = recovered {
+            const PLACEHOLDER: u64 = 0x7BDE3E7D;
+            match reference.target {
+                RecoveredTarget::GotBase => {
+                    instruction.set_immediate32(PLACEHOLDER as u32);
+                    reloc_replace = Some((OpKind::Immediate32, 4, PLACEHOLDER));
+                }
+                RecoveredTarget::GotSlot { .. } => {
+                    instruction.set_memory_displacement64(PLACEHOLDER);
+                    instruction.set_memory_displ_size(4);
+                    reloc_replace = Some((OpKind::Memory, 4, PLACEHOLDER));
+                }
+            }
+        }
+        let mut output = InstructionFormatterOutput {
+            cb,
+            reloc_replace,
+            recovered,
+            error: None,
+            skip_next: false,
+        };
         formatter.format(&instruction, &mut output);
         if let Some(error) = output.error.take() {
             return Err(error);
@@ -425,6 +476,7 @@ impl Arch for ArchX86 {
 struct InstructionFormatterOutput<'a> {
     cb: &'a mut dyn FnMut(InstructionPart<'_>) -> Result<()>,
     reloc_replace: Option<(OpKind, usize, u64)>,
+    recovered: Option<&'a RecoveredReference>,
     error: Option<anyhow::Error>,
     skip_next: bool,
 }
@@ -514,7 +566,10 @@ impl FormatterOutput for InstructionFormatterOutput<'_> {
                 }
                 && value == target_value
             {
-                if let Err(e) = (self.cb)(InstructionPart::reloc()) {
+                let part = self.recovered.map_or_else(InstructionPart::reloc, |r| {
+                    InstructionPart::Arg(InstructionArg::Recovered(r.clone()))
+                });
+                if let Err(e) = (self.cb)(part) {
                     self.error = Some(e);
                 }
                 return;
@@ -581,7 +636,11 @@ mod test {
 
     #[test]
     fn test_scan_instructions() {
-        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [
             0xc7, 0x85, 0x68, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x8b, 0x04, 0x85, 0x00,
             0x00, 0x00, 0x00,
@@ -601,7 +660,11 @@ mod test {
 
     #[test]
     fn test_process_instruction() {
-        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0xc7, 0x85, 0x68, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00];
         let opcode = iced_x86::Mnemonic::Mov as u16;
         let mut parts = Vec::new();
@@ -637,7 +700,11 @@ mod test {
 
     #[test]
     fn test_process_instruction_with_reloc_1() {
-        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0xc7, 0x85, 0x68, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00];
         let opcode = iced_x86::Mnemonic::Mov as u16;
         let mut parts = Vec::new();
@@ -682,7 +749,11 @@ mod test {
 
     #[test]
     fn test_process_instruction_with_reloc_2() {
-        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0x8b, 0x04, 0x85, 0x00, 0x00, 0x00, 0x00];
         let opcode = iced_x86::Mnemonic::Mov as u16;
         let mut parts = Vec::new();
@@ -725,7 +796,11 @@ mod test {
 
     #[test]
     fn test_process_instruction_with_reloc_3() {
-        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0xe8, 0x00, 0x00, 0x00, 0x00];
         let opcode = iced_x86::Mnemonic::Call as u16;
         let mut parts = Vec::new();
@@ -756,7 +831,11 @@ mod test {
 
     #[test]
     fn test_process_instruction_with_reloc_4() {
-        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0x8b, 0x15, 0xa4, 0x21, 0x7e, 0x00];
         let opcode = iced_x86::Mnemonic::Mov as u16;
         let mut parts = Vec::new();
@@ -795,7 +874,11 @@ mod test {
 
     #[test]
     fn test_process_x86_64_instruction_with_reloc_1() {
-        let arch = ArchX86 { arch: Architecture::X86_64, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86_64,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0x48, 0x8b, 0x05, 0x00, 0x00, 0x00, 0x00];
         let opcode = iced_x86::Mnemonic::Mov as u16;
         let mut parts = Vec::new();
@@ -834,7 +917,11 @@ mod test {
 
     #[test]
     fn test_process_x86_64_instruction_with_reloc_2() {
-        let arch = ArchX86 { arch: Architecture::X86_64, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86_64,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0xe8, 0x00, 0x00, 0x00, 0x00];
         let opcode = iced_x86::Mnemonic::Call as u16;
         let mut parts = Vec::new();
@@ -865,7 +952,11 @@ mod test {
 
     #[test]
     fn test_display_1_byte_inline_data() {
-        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let arch = ArchX86 {
+            arch: Architecture::X86,
+            endianness: object::Endianness::Little,
+            linked: Default::default(),
+        };
         let code = [0xAB];
         let mut parts = Vec::new();
         arch.display_instruction(

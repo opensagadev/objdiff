@@ -225,6 +225,7 @@ fn diff_instructions(
 
 fn arg_to_string(arg: &InstructionArg, reloc: Option<ResolvedRelocation>) -> String {
     match arg {
+        InstructionArg::Recovered(arg) => arg.to_string(),
         InstructionArg::Value(arg) => arg.to_string(),
         InstructionArg::Reloc => {
             reloc.as_ref().map_or_else(|| "<unknown>".to_string(), |r| r.symbol.name.clone())
@@ -362,6 +363,9 @@ fn arg_eq(
     diff_config: &DiffObjConfig,
 ) -> bool {
     match left_arg {
+        InstructionArg::Recovered(a) => {
+            matches!(right_arg, InstructionArg::Recovered(b) if a.matches(b))
+        }
         InstructionArg::Value(l) => match right_arg {
             InstructionArg::Value(r) => l.loose_eq(r),
             // If relocations are relaxed, match if left is a constant and right is a reloc
@@ -448,7 +452,10 @@ fn diff_instruction(
         .resolve_instruction_ref(right_symbol_idx, r)
         .context("Failed to resolve right instruction")?;
 
-    if left_resolved.code != right_resolved.code
+    if (diff_config.x86_recover_linked_got
+        && (left_obj.arch.has_recovered_reference(left_resolved)
+            || right_obj.arch.has_recovered_reference(right_resolved)))
+        || left_resolved.code != right_resolved.code
         || !reloc_eq(left_obj, right_obj, left_resolved, right_resolved, diff_config)
     {
         // If either the raw code bytes or relocations don't match, process instructions and compare args

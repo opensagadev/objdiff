@@ -42,7 +42,7 @@ fn map_section_kind(section: &object::Section) -> SectionKind {
 
 /// Check if a symbol's name is partially compiler-generated, and if so normalize it for pairing.
 /// e.g. symbol$1234 and symbol$2345 will both be replaced with symbol$0000 internally.
-fn get_normalized_symbol_name(name: &str) -> Option<String> {
+pub(crate) fn get_normalized_symbol_name(name: &str) -> Option<String> {
     const DUMMY_UNIQUE_ID: &str = "0000";
     const DUMMY_UNIQUE_MSVC_ID: &str = "00000000";
     if let Some((prefix, suffix)) = name.split_once("@class$")
@@ -1147,6 +1147,7 @@ pub fn parse(data: &[u8], config: &DiffObjConfig, diff_side: DiffSide) -> Result
     }
     add_section_symbols(&sections, &mut symbols);
     arch.post_init(&sections, &symbols, &symbol_indices);
+    arch.recover_linked(&obj_file, config)?;
     let mut obj = Object {
         arch,
         endianness: obj_file.endianness(),

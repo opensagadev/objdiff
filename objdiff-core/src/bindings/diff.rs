@@ -181,6 +181,14 @@ impl DiffInstruction {
             Ok(())
         })?;
 
+        let raw_bytes = if parts.iter().any(|p| {
+            matches!(&p.part,
+            Some(diff_instruction_part::Part::Arg(a)) if a.recovered.is_some())
+        }) {
+            resolved.code.to_vec()
+        } else {
+            Vec::new()
+        };
         let relocation = resolved.relocation.map(|r| DiffRelocation::new(obj, r));
 
         let line_number = resolved
@@ -191,6 +199,7 @@ impl DiffInstruction {
             .map(|(_, &line)| line);
 
         Ok(Self {
+            raw_bytes,
             address: resolved.ins_ref.address,
             size: resolved.ins_ref.size as u32,
             formatted,
@@ -215,6 +224,9 @@ fn write_instruction_part(
             out.push(' ');
         }
         InstructionPart::Arg(arg) => match arg {
+            obj::InstructionArg::Recovered(v) => {
+                let _ = write!(out, "{v}");
+            }
             obj::InstructionArg::Value(v) => {
                 let _ = write!(out, "{}", v);
             }
@@ -258,7 +270,25 @@ impl diff_instruction_part::Part {
 
 impl From<&obj::InstructionArg<'_>> for DiffInstructionArg {
     fn from(arg: &obj::InstructionArg) -> Self {
+        let recovered = if let obj::InstructionArg::Recovered(r) = arg {
+            let (got_base, symbol, section, addend) = match &r.target {
+                obj::RecoveredTarget::GotBase => (true, None, None, 0),
+                obj::RecoveredTarget::GotSlot { name, section, addend } => {
+                    (false, Some(name.clone()), section.clone(), *addend)
+                }
+            };
+            Some(DiffRecoveredReference {
+                got_base,
+                symbol,
+                section,
+                addend,
+                raw_value: r.raw_value,
+            })
+        } else {
+            None
+        };
         let arg = match arg {
+            obj::InstructionArg::Recovered(v) => diff_instruction_arg::Arg::Opaque(v.to_string()),
             obj::InstructionArg::Value(v) => match v {
                 obj::InstructionArgValue::Signed(v) => diff_instruction_arg::Arg::Signed(*v),
                 obj::InstructionArgValue::Unsigned(v) => diff_instruction_arg::Arg::Unsigned(*v),
@@ -269,7 +299,7 @@ impl From<&obj::InstructionArg<'_>> for DiffInstructionArg {
             obj::InstructionArg::Reloc => diff_instruction_arg::Arg::Reloc(true),
             obj::InstructionArg::BranchDest(dest) => diff_instruction_arg::Arg::BranchDest(*dest),
         };
-        DiffInstructionArg { arg: Some(arg) }
+        DiffInstructionArg { arg: Some(arg), recovered }
     }
 }
 

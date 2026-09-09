@@ -89,6 +89,8 @@ message DiffInstruction {
   optional uint64 branch_dest = 6;
   // Source line number (if present)
   optional uint32 line_number = 7;
+  // Raw instruction bytes when linked-reference recovery annotates an operand.
+  bytes raw_bytes = 8;
 }
 
 // An instruction part
@@ -113,7 +115,17 @@ message DiffOpcode {
 }
 
 // An instruction argument
+// Explicit metadata for a recovered operand; this is not an ELF relocation.
+message DiffRecoveredReference {
+  bool got_base = 1;
+  optional string symbol = 2;
+  optional string section = 3;
+  sint64 addend = 4;
+  uint32 raw_value = 5;
+}
+
 message DiffInstructionArg {
+  optional DiffRecoveredReference recovered = 6;
   oneof arg {
     // Signed immediate value
     sint64 signed = 1;

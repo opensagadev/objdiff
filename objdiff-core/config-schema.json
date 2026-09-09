@@ -360,6 +360,13 @@
       "description": "Display pooled data references in functions as fake relocations."
     },
     {
+      "id": "x86.recoverLinkedGot",
+      "type": "boolean",
+      "default": false,
+      "name": "Recover linked ELF32 GOT references",
+      "description": "Recover proven i386 PIC GOT references and base construction. Changes semantic instruction scores; reload objects after changing this option."
+    },
+    {
       "id": "x86.formatter",
       "type": "choice",
       "default": "intel",
@@ -426,7 +433,7 @@
     {
       "id": "x86",
       "name": "x86",
-      "properties": ["x86.formatter"]
+      "properties": ["x86.formatter", "x86.recoverLinkedGot"]
     }
   ]
 }

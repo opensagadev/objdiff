@@ -144,6 +144,57 @@ impl Section {
     }
 }
 
+/// A recovered linked reference, not an ELF instruction relocation. Raw bytes remain in
+/// `ResolvedInstructionRef::code`; the original numeric operand is retained here as well.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RecoveredReference {
+    pub target: RecoveredTarget,
+    pub raw_value: u32,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum RecoveredTarget {
+    GotBase,
+    GotSlot { name: String, section: Option<String>, addend: i64 },
+}
+
+impl RecoveredReference {
+    pub fn matches(&self, other: &Self) -> bool {
+        match (&self.target, &other.target) {
+            (RecoveredTarget::GotBase, RecoveredTarget::GotBase) => true,
+            (
+                RecoveredTarget::GotSlot { name: a, section: sa, addend: aa },
+                RecoveredTarget::GotSlot { name: b, section: sb, addend: ab },
+            ) => {
+                let names_match = match (
+                    read::get_normalized_symbol_name(a),
+                    read::get_normalized_symbol_name(b),
+                ) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => a == b,
+                };
+                names_match && aa == ab && (sa.is_none() || sb.is_none() || sa == sb)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Display for RecoveredReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.target {
+            RecoveredTarget::GotBase => f.write_str("GOT_BASE"),
+            RecoveredTarget::GotSlot { name, addend, .. } => {
+                write!(f, "GOT({name}")?;
+                if *addend != 0 {
+                    write!(f, "{:+#x}", ReallySigned(*addend))?;
+                }
+                f.write_str(")")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum InstructionArgValue<'a> {
     Signed(i64),
@@ -194,6 +245,7 @@ impl fmt::Display for InstructionArgValue<'_> {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum InstructionArg<'a> {
+    Recovered(RecoveredReference),
     Value(InstructionArgValue<'a>),
     Reloc,
     BranchDest(u64),
@@ -202,6 +254,7 @@ pub enum InstructionArg<'a> {
 impl InstructionArg<'_> {
     pub fn loose_eq(&self, other: &InstructionArg) -> bool {
         match (self, other) {
+            (InstructionArg::Recovered(a), InstructionArg::Recovered(b)) => a.matches(b),
             (InstructionArg::Value(a), InstructionArg::Value(b)) => a.loose_eq(b),
             (InstructionArg::Reloc, InstructionArg::Reloc) => true,
             (InstructionArg::BranchDest(a), InstructionArg::BranchDest(b)) => a == b,
@@ -211,6 +264,7 @@ impl InstructionArg<'_> {
 
     pub fn to_static(&self) -> InstructionArg<'static> {
         match self {
+            InstructionArg::Recovered(v) => InstructionArg::Recovered(v.clone()),
             InstructionArg::Value(v) => InstructionArg::Value(v.to_static()),
             InstructionArg::Reloc => InstructionArg::Reloc,
             InstructionArg::BranchDest(v) => InstructionArg::BranchDest(*v),
@@ -219,6 +273,7 @@ impl InstructionArg<'_> {
 
     pub fn into_static(self) -> InstructionArg<'static> {
         match self {
+            InstructionArg::Recovered(v) => InstructionArg::Recovered(v),
             InstructionArg::Value(v) => InstructionArg::Value(v.into_static()),
             InstructionArg::Reloc => InstructionArg::Reloc,
             InstructionArg::BranchDest(v) => InstructionArg::BranchDest(v),

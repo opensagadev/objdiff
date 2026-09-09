@@ -96,6 +96,9 @@ fn run_find_similar(
                         InstructionPart::Basic(s) | InstructionPart::Opcode(s, _) => {
                             text.push_str(&s)
                         }
+                        InstructionPart::Arg(InstructionArg::Recovered(v)) => {
+                            text.push_str(&v.to_string())
+                        }
                         InstructionPart::Arg(InstructionArg::Value(v)) => {
                             text.push_str(&v.to_string())
                         }

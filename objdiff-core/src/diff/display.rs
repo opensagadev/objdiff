@@ -232,6 +232,11 @@ pub fn display_row(
                 result.get_argument_value_at_address(
                     ins_ref.address, (arg_idx - 1) as u8));
             match (arg, data_flow_value, resolved.ins_ref.branch_dest) {
+                (InstructionArg::Recovered(reference), _, _) => cb(DiffTextSegment {
+                    text: DiffText::Argument(InstructionArgValue::Opaque(reference.to_string().into())),
+                    color: diff_index.get().map_or(DiffTextColor::Bright, |i| DiffTextColor::Rotating(i as u8)),
+                    pad_to: 0,
+                }),
                 // If we have a flow analysis result, always use that over anything else.
                 (InstructionArg::Value(_) | InstructionArg::Reloc, Some(FlowAnalysisValue::Text(text)), _) => {
                     cb(DiffTextSegment {
@@ -620,6 +625,13 @@ pub fn instruction_context(
         });
     }
     for arg in &ins.args {
+        if let InstructionArg::Recovered(reference) = arg {
+            out.push(ContextItem::Copy {
+                value: format!("{:#x}", reference.raw_value),
+                label: Some("raw linked operand".into()),
+                copy_string: None,
+            });
+        }
         if let InstructionArg::Value(arg) = arg {
             out.push(ContextItem::Copy { value: arg.to_string(), label: None, copy_string: None });
             match arg {
@@ -670,6 +682,13 @@ pub fn instruction_hover(
         });
     }
     for arg in &ins.args {
+        if let InstructionArg::Recovered(reference) = arg {
+            out.push(HoverItem::Text {
+                label: "Raw linked operand".into(),
+                value: format!("{:#x} ({})", reference.raw_value, reference.raw_value as i32),
+                color: HoverItemColor::Normal,
+            });
+        }
         if let InstructionArg::Value(arg) = arg {
             match arg {
                 InstructionArgValue::Signed(v) => {

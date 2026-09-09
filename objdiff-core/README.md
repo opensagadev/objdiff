@@ -14,3 +14,7 @@ objdiff-core contains the core functionality of [objdiff](https://github.com/enc
 - **`ppc`**: Enables the PowerPC backend powered by [powerpc](https://github.com/encounter/powerpc-rs).
 - **`superh`**: Enables the SuperH backend powered by an included disassembler.
 - **`x86`**: Enables the x86 backend powered by [iced-x86](https://crates.io/crates/iced-x86).
+
+Linked ELF32 i386 PIC GOT comparison is available through the opt-in
+`x86.recoverLinkedGot` option. See [linked GOT comparison](README-linked-got.md)
+for supported patterns, conservative fallbacks, usage, and validation.

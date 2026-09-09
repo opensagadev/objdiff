@@ -211,6 +211,7 @@ mod test {
                 InstructionArg::Value(v) => write!(f, "{v}"),
                 InstructionArg::BranchDest(v) => write!(f, "{v}"),
                 InstructionArg::Reloc => f.write_str("reloc"),
+                InstructionArg::Recovered(r) => write!(f, "{r}"),
             }
         }
     }
