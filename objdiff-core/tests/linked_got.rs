@@ -365,3 +365,162 @@ fn invalid_code_and_conflicting_base_metadata() {
     });
     assert!(refs(&conflicting, &config, "relative").is_empty());
 }
+
+#[test]
+fn got_relative_direct_addresses() {
+    let (left, config) = load(false, true);
+    let (right, _) = load(true, true);
+    for name in [
+        "direct_address",
+        "direct_interior",
+        "direct_non_ebx",
+        "direct_negative",
+        "direct_zero",
+        "direct_copied",
+    ] {
+        let l = refs(&left, &config, name);
+        let r = refs(&right, &config, name);
+        assert_eq!(l.len(), 2, "{name}: {l:?}");
+        assert_eq!(r.len(), 2, "{name}: {r:?}");
+        assert!(matches!(l[1].target, RecoveredTarget::GotRelative { .. }));
+        assert!(l[1].matches(&r[1]), "{name}");
+        if name != "direct_zero" {
+            assert_ne!(l[1].raw_value, r[1].raw_value, "{name}");
+        }
+        let li = left.symbol_by_name(name).unwrap();
+        let ri = right.symbol_by_name(name).unwrap();
+        let (ld, _) = diff::code::diff_code(&left, &right, li, ri, &config).unwrap();
+        assert_eq!(ld.match_percent, Some(100.0), "{name}: {ld:?}");
+        assert!(common::display_diff(&left, &ld, li, &config).contains("GOTOFF("));
+    }
+    assert!(matches!(&refs(&left, &config, "direct_interior")[1].target,
+        RecoveredTarget::GotRelative { name, addend: 2, .. } if name == "object"));
+    // A pointer load and a direct address must not be confused even for the same symbol.
+    assert!(
+        !refs(&left, &config, "relative")[1].matches(&refs(&left, &config, "direct_address")[1])
+    );
+    let instructions = args(&left, &config, "direct_kills_base");
+    assert!(instructions[2].args.iter().any(|a| matches!(a, InstructionArg::Recovered(_))));
+    assert!(!instructions[3].args.iter().any(|a| matches!(a, InstructionArg::Recovered(_))));
+}
+
+#[test]
+fn direct_address_changes_and_fallbacks() {
+    let (left, config) = load(false, true);
+    let (right, _) = load(true, true);
+    for name in [
+        "direct_different_symbol",
+        "direct_different_addend",
+        "direct_different_register",
+        "direct_different_opcode",
+        "direct_different_width",
+    ] {
+        let (ld, _) = diff::code::diff_code(
+            &left,
+            &right,
+            left.symbol_by_name(name).unwrap(),
+            right.symbol_by_name(name).unwrap(),
+            &config,
+        )
+        .unwrap();
+        assert_ne!(ld.instruction_rows[2].kind, InstructionDiffKind::None, "{name}");
+    }
+    for name in [
+        "direct_clobber",
+        "direct_indexed",
+        "direct_conflicting",
+        "direct_alias",
+        "direct_overlap",
+        "direct_missing",
+    ] {
+        assert!(
+            refs(&left, &config, name).iter().all(|r| r.target == RecoveredTarget::GotBase),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn recovery_defaults_on_and_direct_addresses_can_be_disabled() {
+    let default = DiffObjConfig::default();
+    assert!(default.x86_recover_linked_got);
+    let left = obj::read::parse(
+        include_object!("data/x86/linked-got/left.elf"),
+        &default,
+        DiffSide::Target,
+    )
+    .unwrap();
+    assert!(matches!(
+        refs(&left, &default, "direct_address")[1].target,
+        RecoveredTarget::GotRelative { .. }
+    ));
+    let (left, disabled) = load(false, false);
+    let (right, _) = load(true, false);
+    assert!(refs(&left, &disabled, "direct_address").is_empty());
+    let (ld, _) = diff::code::diff_code(
+        &left,
+        &right,
+        left.symbol_by_name("direct_address").unwrap(),
+        right.symbol_by_name("direct_address").unwrap(),
+        &disabled,
+    )
+    .unwrap();
+    assert_eq!(ld.instruction_rows[2].kind, InstructionDiffKind::ArgMismatch);
+}
+
+#[test]
+fn direct_address_formatting_and_export() {
+    let (object, mut config) = load(false, true);
+    for formatter in [
+        diff::X86Formatter::Intel,
+        diff::X86Formatter::Gas,
+        diff::X86Formatter::Masm,
+        diff::X86Formatter::Nasm,
+    ] {
+        config.x86_formatter = formatter;
+        for name in ["direct_address", "direct_negative", "direct_zero"] {
+            assert_eq!(refs(&object, &config, name).len(), 2, "{formatter:?}: {name}");
+        }
+    }
+    let index = object.symbol_by_name("direct_interior").unwrap();
+    let ins = &args(&object, &config, "direct_interior")[2];
+    let resolved = object.resolve_instruction_ref(index, ins.ins_ref).unwrap();
+    let exported =
+        objdiff_core::bindings::diff::DiffInstruction::new(&object, resolved, &config).unwrap();
+    assert_eq!(exported.raw_bytes, resolved.code);
+    assert!(exported.relocation.is_none());
+    let metadata = exported
+        .parts
+        .iter()
+        .find_map(|p| match &p.part {
+            Some(objdiff_core::bindings::diff::diff_instruction_part::Part::Arg(a)) => {
+                a.recovered.as_ref()
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(metadata.got_relative);
+    assert!(!metadata.got_base);
+    assert_eq!(metadata.symbol.as_deref(), Some("object"));
+    assert_eq!(metadata.addend, 2);
+}
+
+#[test]
+fn identical_lea_bytes_still_check_direct_symbol_identity() {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+    let (left, config) = load(false, true);
+    let right = mutated(|file, data| {
+        let table = file.section_by_name(".symtab").unwrap().file_range().unwrap().0 as usize;
+        let object = file.symbol_by_name("object").unwrap();
+        let other = file.symbol_by_name("other").unwrap();
+        let a = table + object.index().0 * 16 + 4;
+        let b = table + other.index().0 * 16 + 4;
+        data[a..a + 4].copy_from_slice(&(other.address() as u32).to_le_bytes());
+        data[b..b + 4].copy_from_slice(&(object.address() as u32).to_le_bytes());
+    });
+    let li = left.symbol_by_name("direct_address").unwrap();
+    let ri = right.symbol_by_name("direct_address").unwrap();
+    assert_eq!(left.symbol_data(li), right.symbol_data(ri));
+    let (ld, _) = diff::code::diff_code(&left, &right, li, ri, &config).unwrap();
+    assert_eq!(ld.instruction_rows[2].kind, InstructionDiffKind::ArgMismatch);
+}

@@ -150,6 +150,85 @@ unproven:
     mov slot@GOTOFF(%ebx), %eax
 end unproven
 
+# Linked R_386_GOTOFF-style direct addresses: no GOT-slot relocation is involved.
+begin direct_address
+    lea object@GOTOFF(%ebx), %edx
+end direct_address
+begin direct_interior
+    lea object@GOTOFF+2(%ebx), %edx
+end direct_interior
+begin direct_non_ebx, esi, si
+    lea object@GOTOFF(%esi), %edx
+end direct_non_ebx
+begin direct_negative
+    lea ordinary@GOTOFF(%ebx), %edx
+end direct_negative
+begin direct_zero
+    lea (%ebx), %edx
+end direct_zero
+begin direct_copied
+    mov %ebx, %edi
+    xor %ebx, %ebx
+    lea object@GOTOFF(%edi), %edx
+end direct_copied
+begin direct_different_symbol
+.if RIGHT
+    lea other@GOTOFF(%ebx), %edx
+.else
+    lea object@GOTOFF(%ebx), %edx
+.endif
+end direct_different_symbol
+begin direct_different_addend
+    lea object@GOTOFF+RIGHT(%ebx), %edx
+end direct_different_addend
+begin direct_different_register
+.if RIGHT
+    lea object@GOTOFF(%ebx), %eax
+.else
+    lea object@GOTOFF(%ebx), %edx
+.endif
+end direct_different_register
+begin direct_different_opcode
+.if RIGHT
+    mov slot@GOTOFF(%ebx), %edx
+.else
+    lea object@GOTOFF(%ebx), %edx
+.endif
+end direct_different_opcode
+begin direct_different_width
+.if RIGHT
+    lea object@GOTOFF(%ebx), %dx
+.else
+    lea object@GOTOFF(%ebx), %edx
+.endif
+end direct_different_width
+begin direct_clobber
+    xor %ebx, %ebx
+    lea object@GOTOFF(%ebx), %edx
+end direct_clobber
+begin direct_indexed
+    lea object@GOTOFF(%ebx,%eax,4), %edx
+end direct_indexed
+begin direct_conflicting
+    test %eax, %eax
+    je 1f
+    xor %ebx, %ebx
+1:  lea object@GOTOFF(%ebx), %edx
+end direct_conflicting
+begin direct_alias
+    lea alias_a@GOTOFF(%ebx), %edx
+end direct_alias
+begin direct_overlap
+    lea overlap@GOTOFF+2(%ebx), %edx
+end direct_overlap
+begin direct_missing
+    lea .Lunnamed@GOTOFF(%ebx), %edx
+end direct_missing
+begin direct_kills_base
+    lea object@GOTOFF(%ebx), %ebx
+    lea object@GOTOFF(%ebx), %edx
+end direct_kills_base
+
 .macro thunk suffix, reg
 .type thunk_\suffix,@function
 thunk_\suffix:
@@ -183,7 +262,12 @@ unsupported_slot: .long external
 .if RIGHT
 .space 16
 .endif
+.section .rodata
+.Lunnamed: .long 0
 .data
+.if RIGHT
+.space 16
+.endif
 .globl object, other
 .hidden object, other
 .type object,@object

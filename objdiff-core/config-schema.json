@@ -362,9 +362,9 @@
     {
       "id": "x86.recoverLinkedGot",
       "type": "boolean",
-      "default": false,
+      "default": true,
       "name": "Recover linked ELF32 GOT references",
-      "description": "Recover proven i386 PIC GOT references and base construction. Changes semantic instruction scores; reload objects after changing this option."
+      "description": "Recover proven i386 PIC GOT slot loads, GOT-relative addresses, and base construction. Changes semantic instruction scores; reload objects after changing this option."
     },
     {
       "id": "x86.formatter",

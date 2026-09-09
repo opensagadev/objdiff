@@ -155,7 +155,17 @@ pub struct RecoveredReference {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RecoveredTarget {
     GotBase,
-    GotSlot { name: String, section: Option<String>, addend: i64 },
+    GotSlot {
+        name: String,
+        section: Option<String>,
+        addend: i64,
+    },
+    /// The operand computes the symbol address directly, not the address of a GOT slot.
+    GotRelative {
+        name: String,
+        section: Option<String>,
+        addend: i64,
+    },
 }
 
 impl RecoveredReference {
@@ -165,6 +175,10 @@ impl RecoveredReference {
             (
                 RecoveredTarget::GotSlot { name: a, section: sa, addend: aa },
                 RecoveredTarget::GotSlot { name: b, section: sb, addend: ab },
+            )
+            | (
+                RecoveredTarget::GotRelative { name: a, section: sa, addend: aa },
+                RecoveredTarget::GotRelative { name: b, section: sb, addend: ab },
             ) => {
                 let names_match = match (
                     read::get_normalized_symbol_name(a),
@@ -184,8 +198,14 @@ impl fmt::Display for RecoveredReference {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.target {
             RecoveredTarget::GotBase => f.write_str("GOT_BASE"),
-            RecoveredTarget::GotSlot { name, addend, .. } => {
-                write!(f, "GOT({name}")?;
+            RecoveredTarget::GotSlot { name, addend, .. }
+            | RecoveredTarget::GotRelative { name, addend, .. } => {
+                let kind = if matches!(self.target, RecoveredTarget::GotRelative { .. }) {
+                    "GOTOFF"
+                } else {
+                    "GOT"
+                };
+                write!(f, "{kind}({name}")?;
                 if *addend != 0 {
                     write!(f, "{:+#x}", ReallySigned(*addend))?;
                 }

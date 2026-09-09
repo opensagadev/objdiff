@@ -15,6 +15,6 @@ objdiff-core contains the core functionality of [objdiff](https://github.com/enc
 - **`superh`**: Enables the SuperH backend powered by an included disassembler.
 - **`x86`**: Enables the x86 backend powered by [iced-x86](https://crates.io/crates/iced-x86).
 
-Linked ELF32 i386 PIC GOT comparison is available through the opt-in
-`x86.recoverLinkedGot` option. See [linked GOT comparison](README-linked-got.md)
+Linked ELF32 i386 PIC GOT-slot and GOT-relative address comparison is enabled
+by default; set `x86.recoverLinkedGot=false` to opt out. See [linked GOT comparison](README-linked-got.md)
 for supported patterns, conservative fallbacks, usage, and validation.

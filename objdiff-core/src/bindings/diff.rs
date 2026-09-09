@@ -273,7 +273,8 @@ impl From<&obj::InstructionArg<'_>> for DiffInstructionArg {
         let recovered = if let obj::InstructionArg::Recovered(r) = arg {
             let (got_base, symbol, section, addend) = match &r.target {
                 obj::RecoveredTarget::GotBase => (true, None, None, 0),
-                obj::RecoveredTarget::GotSlot { name, section, addend } => {
+                obj::RecoveredTarget::GotSlot { name, section, addend }
+                | obj::RecoveredTarget::GotRelative { name, section, addend } => {
                     (false, Some(name.clone()), section.clone(), *addend)
                 }
             };
@@ -283,6 +284,7 @@ impl From<&obj::InstructionArg<'_>> for DiffInstructionArg {
                 section,
                 addend,
                 raw_value: r.raw_value,
+                got_relative: matches!(r.target, obj::RecoveredTarget::GotRelative { .. }),
             })
         } else {
             None

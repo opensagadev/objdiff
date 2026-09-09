@@ -305,7 +305,7 @@ impl Arch for ArchX86 {
                     instruction.set_immediate32(PLACEHOLDER as u32);
                     reloc_replace = Some((OpKind::Immediate32, 4, PLACEHOLDER));
                 }
-                RecoveredTarget::GotSlot { .. } => {
+                RecoveredTarget::GotSlot { .. } | RecoveredTarget::GotRelative { .. } => {
                     instruction.set_memory_displacement64(PLACEHOLDER);
                     instruction.set_memory_displ_size(4);
                     reloc_replace = Some((OpKind::Memory, 4, PLACEHOLDER));

@@ -22,3 +22,9 @@ R_386_GLOB_DAT, an unsupported R_386_32, ambiguous aliases, overlapping objects,
 and a numeric value with no relocation. Tests also mutate metadata and code in
 memory to check malformed inputs, missing names, symbol-order independence, and
 identical instruction bytes with changed symbolic meaning.
+
+The `direct_*` functions exercise LEA with GOT-relative symbol addresses, including
+interior addends, register copies, negative/zero displacements, differing opcodes,
+widths and targets, clobbers, ambiguous merges, missing symbols and alias fallbacks.
+Direct addresses and pointer loads remain distinct even when they name the same
+symbol. Tests also verify that recovery defaults on and can be explicitly disabled.

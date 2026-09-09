@@ -1,8 +1,8 @@
 # Linked ELF32 i386 GOT comparison
 
-Enable `x86.recoverLinkedGot` to compare proven PIC GOT references symbolically.
-The option defaults to **false**. It changes semantic instruction scores, not raw
-bytes or data-symbol scores. No global comparison defaults change.
+The `x86.recoverLinkedGot` option compares proven PIC GOT references symbolically
+and defaults to **true**. Set it to **false** to retain numeric comparison. It changes semantic instruction scores, not raw
+bytes or data-symbol scores. Other comparison settings retain their existing defaults.
 
 For example, using the CLI built in this checkout:
 
@@ -24,17 +24,19 @@ output unchanged; ET_REL objects, ELF64, and other architectures are unaffected.
 ## Representation and comparison
 
 `InstructionArg::Recovered` contains an explicit `RecoveredReference`: either a
-GOT-slot symbol plus symbol-relative addend and section, or a proven GOT-base
-construction. This is not a fabricated ELF relocation. GOT-slot references denote
+GOT-slot symbol, a GOT-relative direct symbol address, or a proven GOT-base
+construction. Symbol references retain their section and symbol-relative addend. This is not a fabricated ELF relocation. GOT-slot references denote
 **loading a pointer from the slot**, not loading the target object's contents. A
-subsequent instruction such as `mov eax, [eax]` is left alone.
+subsequent instruction such as `mov eax, [eax]` is left alone. LEA direct addresses
+use a separate `GotRelative` target, so they cannot compare as GOT-slot loads.
 
 Recovered operands participate in the normal instruction argument comparison,
 diff rows, and scoring. Even identical instruction bytes are compared symbolically
 when recovery found a reference: identical displacements can address different
 symbols in different libraries. Register operands, opcode, prefixes, and other
-arguments still participate. Only 32-bit pointer loads are currently recovered;
-changing their width or replacing MOV with LEA does not normalize the instruction.
+arguments still participate. Recovery supports 32-bit pointer loads and 32-bit
+LEA direct addresses. Changing their width or replacing MOV with LEA still produces
+a mismatch; semantic reference recovery does not erase opcode differences.
 
 Symbol-name normalization uses the existing object-loader normalization function.
 As with ordinary instruction relocations, section names must agree when both
@@ -49,11 +51,13 @@ GOT-reference identity. R_386_RELATIVE and R_386_GLOB_DAT both describe a slot
 holding the resolved symbol pointer, so their recovered slot references can match.
 This comparison does not model runtime symbol interposition.
 
-Display uses `GOT(symbol+addend)` and `GOT_BASE` in all four x86 syntaxes. These are
+Display uses `GOT(symbol+addend)`, `GOTOFF(symbol+addend)`, and `GOT_BASE`
+in all four x86 syntaxes. These are
 annotations, not reassemblable operands. Hover/context menus retain the original
 numeric operand and instruction bytes. JSON/protobuf output retains the formatted
 opaque argument for compatibility and adds explicit `recovered` metadata, including
-`raw_value`; annotated instructions also include `raw_bytes`. The ELF `relocation`
+`raw_value`; direct-address metadata sets `got_relative=true`. Annotated
+instructions also include `raw_bytes`. The ELF `relocation`
 field remains absent unless an actual instruction relocation exists.
 
 ## Analysis and conservative boundaries
@@ -63,7 +67,10 @@ GOT slots must be aligned, readable four-byte words in `.got` or `.got.plt` with
 supported dynamic relocation. R_386_GLOB_DAT uses its dynamic symbol (zero addend).
 R_386_RELATIVE reads the link-time pointer for REL, or the explicit addend for RELA,
 and resolves it through an address index of available static/dynamic symbols.
-R_386_32, JMP_SLOT, TLS relocations, and other kinds stay numeric.
+R_386_32, JMP_SLOT, TLS relocations, and other kinds stay numeric. For LEA,
+`base + displacement` resolves directly through the same symbol interval index;
+no dynamic relocation is required at that address. This recovers linked GOTOFF
+semantics without inventing an instruction relocation.
 
 The base comes from `_GLOBAL_OFFSET_TABLE_` and/or DT_PLTGOT. Conflicting values
 reject recovery. If neither is available, the start of `.got.plt` is the supported
@@ -84,7 +91,8 @@ writes. Full-width register MOV copies are supported. Calls invalidate EAX/ECX/E
 under the SysV i386 ABI; callee-saved GOT facts survive. No interprocedural analysis
 of arbitrary callees is attempted.
 
-Pointer loads require a proven base and no index or explicit segment override.
+Pointer loads and direct LEA addresses require a proven base and no index or
+explicit segment override.
 Unknown bases, unrelated numeric constants, overwritten registers, ambiguous merges,
 indexed/TLS operands, other arithmetic or access forms, malformed instructions,
 interior branch targets, and unsupported relocations stay numeric. Entire functions
@@ -99,7 +107,8 @@ an exact address or an interior address must belong to exactly one named symbol.
 Distinct aliases, overlapping ranges, and same-name records with conflicting sizes
 are ambiguous, even at an exact start. Zero-size symbols can resolve only their
 exact address. There is no nearest-symbol heuristic, and symbol iteration order
-cannot affect the choice. Named GLOB_DAT relocations already identify a symbol and
+cannot affect the choice. Direct LEA targets follow the same conservative alias/interior policy as relative
+relocations. Named GLOB_DAT relocations already identify a symbol and
 do not need address-based alias selection. Missing names and out-of-range metadata
 fall back to numeric operands.
 
@@ -108,7 +117,7 @@ there is no symbol-table scan per instruction. Thunk validation and recovered
 instruction references are cached. Recovery does eagerly analyze all eligible
 functions during loading, even for a single-function diff.
 
-## Validation, 2026-09-09
+## Initial GOT-slot implementation validation, 2026-09-09
 
 Ten synthetic integration tests cover positive references, differing symbol sizes,
 real changes, all formatter styles, exported metadata/raw bytes, disabled recovery,
@@ -172,3 +181,48 @@ validation artifacts. The median was **128 ms disabled** (126–138 ms range) an
 end-to-end time. This is a single-function invocation that pays for eager recovery
 across both libraries; cached display/diff does not rerun the analysis. These
 semantic matches do not imply byte-identical code.
+
+## Direct-address extension and default-on validation
+
+Recovery now also handles `lea r32, [proven_got_base + displacement]` and is enabled
+by default. Existing helpers that omit the option receive recovery when using the
+updated binary. Explicit `x86.recoverLinkedGot=false` still opts out; saved explicit
+false values are respected. The eager object-load analysis cost described above
+therefore applies by default to eligible linked i386 libraries.
+
+Fifteen integration tests now cover both reference kinds, including direct-address
+addends, differing sizes, negative/zero displacements, all formatter styles,
+register/opcode/width changes, register invalidation, aliases, indexed addressing,
+ambiguous merges, identical LEA bytes with changed symbol identity, export metadata,
+and the default/opt-out behavior. `cargo test` passes 71 tests; formatting, full
+workspace clippy, no_std x86 checking, and debug/release builds pass. There are no
+new dependencies in this extension.
+
+Fresh temporary Saga snapshots were used; no game files are included as fixtures.
+The original SHA-256 is unchanged from the initial validation; the new rebuilt
+snapshot is `7767b93ce940274846b3a37d82d4442f063abe76db51b5eb18a61403257a9cb9`.
+Readelf and objdump independently identify these addresses for `NuPadGetPlayer(int)`
+(`_Z14NuPadGetPlayeri`):
+
+| | Original | Rebuilt |
+|---|---|---|
+| GOT base | `0x616870` | `0x3f3d20` |
+| First LEA | `0x26bcb1` | `0x2bb7b0` |
+| Second LEA | `0x26bcce` | `0x2bb7cd` |
+| Displacement | `0x137670` | `0xc32940` |
+| Direct target address | `0x74dee0` | `0x1026660` |
+| Symbol | `_ZL18g_nupadScannedPads` | `_ZL18g_nupadScannedPads` |
+| Addend | 0 | 0 |
+
+The workspace release CLI reports **100%** with no explicit option: the GOT setup
+and both LEAs match symbolically. Explicitly disabling recovery reports
+**99.90323%**, with JSON output identical to the previous commit's disabled output.
+The previous GOT-slot-only implementation reported **99.935486%** when enabled.
+Both LEAs display `lea edx, [ebx+GOTOFF(_ZL18g_nupadScannedPads)]`; exported metadata
+distinguishes the direct address and retains the different raw displacement/bytes.
+These are semantic matches, not byte identity.
+
+`NuPadGetPort(int)` and `NuPadMapPortToPS2Port(int, int)` also reach semantic 100%.
+`NuPadSetMotors` retains a numeric mismatch for a direct MOV from object contents
+outside the GOT. Direct memory loads/stores outside GOT slots remain unsupported;
+this extension recovers LEA address calculations only.

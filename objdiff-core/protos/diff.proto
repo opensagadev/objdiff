@@ -122,6 +122,8 @@ message DiffRecoveredReference {
   optional string section = 3;
   sint64 addend = 4;
   uint32 raw_value = 5;
+  // Direct symbol address relative to the GOT base (LEA), not a slot load.
+  bool got_relative = 6;
 }
 
 message DiffInstructionArg {

@@ -77,6 +77,22 @@ fn intervals(targets: &[Target]) -> BTreeMap<u64, Option<usize>> {
     out
 }
 
+/// Shared address resolver for relocated slot contents and linked GOTOFF operands.
+struct SymbolIndex {
+    targets: Vec<Target>,
+    intervals: BTreeMap<u64, Option<usize>>,
+}
+
+impl SymbolIndex {
+    fn new(targets: Vec<Target>) -> Self { Self { intervals: intervals(&targets), targets } }
+
+    fn resolve(&self, address: u64) -> Option<(&Target, i64)> {
+        let i = self.intervals.range(..=address).next_back()?.1.as_ref()?;
+        let target = &self.targets[*i];
+        Some((target, (address - target.address) as i64))
+    }
+}
+
 fn read_at<'a>(file: &'a object::File, addr: u64, size: u64) -> Option<&'a [u8]> {
     let mut matches = file.sections().filter(|s| matches!(s.flags(), object::SectionFlags::Elf { sh_flags } if sh_flags & u64::from(elf::SHF_ALLOC) != 0)).filter_map(|s| s.data_range(addr, size).ok().flatten());
     let data = matches.next()?;
@@ -137,7 +153,7 @@ impl Linked {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let index = intervals(&targets);
+        let index = SymbolIndex::new(targets);
         let mut slots = BTreeMap::new();
         let mut seen = BTreeSet::new();
         if let Some(relocs) = file.dynamic_relocations() {
@@ -167,11 +183,7 @@ impl Linked {
                         } else {
                             u32::try_from(reloc.addend()).ok().map(u64::from)
                         };
-                        value.and_then(|v| {
-                            let i = index.range(..=v).next_back()?.1.as_ref()?;
-                            let t = &targets[*i];
-                            Some((t.clone(), (v - t.address) as i64))
-                        })
+                        value.and_then(|v| index.resolve(v)).map(|(t, addend)| (t.clone(), addend))
                     }
                     elf::R_386_GLOB_DAT => {
                         if let object::RelocationTarget::Symbol(i) = reloc.target() {
@@ -248,7 +260,7 @@ impl Linked {
                     });
                 }
             }
-            result.analyze(addr, &instructions, base as u32, &slots, &thunks);
+            result.analyze(addr, &instructions, base as u32, &slots, &thunks, &index);
         }
         result
     }
@@ -260,6 +272,7 @@ impl Linked {
         base: u32,
         slots: &BTreeMap<u64, RecoveredTarget>,
         thunks: &BTreeMap<u64, Option<Register>>,
+        index: &SymbolIndex,
     ) {
         if instructions.is_empty() {
             return;
@@ -318,8 +331,8 @@ impl Linked {
                     raw_value: i.immediate32(),
                 });
             }
-            // Only pointer loads. LEA, stores, byte/word loads and indexed/TLS addressing stay numeric.
-            if i.code() != Code::Mov_r32_rm32
+            // Pointer loads and direct address calculations have different symbolic semantics.
+            if !matches!(i.code(), Code::Mov_r32_rm32 | Code::Lea_r32_m)
                 || i.op1_kind() != OpKind::Memory
                 || i.memory_index() != Register::None
                 || i.segment_prefix() != Register::None
@@ -328,12 +341,20 @@ impl Linked {
                 continue;
             }
             let raw_value = i.memory_displacement32();
-            let slot = base.wrapping_add(raw_value) as u64;
-            if let Some(target) = slots.get(&slot) {
-                self.references.insert((start, i.ip()), RecoveredReference {
-                    target: target.clone(),
-                    raw_value,
-                });
+            let address = base.wrapping_add(raw_value) as u64;
+            let target = match i.code() {
+                Code::Mov_r32_rm32 => slots.get(&address).cloned(),
+                Code::Lea_r32_m => {
+                    index.resolve(address).map(|(symbol, addend)| RecoveredTarget::GotRelative {
+                        name: symbol.name.clone(),
+                        section: symbol.section.clone(),
+                        addend,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(target) = target {
+                self.references.insert((start, i.ip()), RecoveredReference { target, raw_value });
             }
         }
     }
