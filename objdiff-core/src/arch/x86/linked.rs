@@ -332,7 +332,7 @@ impl Linked {
                 });
             }
             // Pointer loads and direct address calculations have different symbolic semantics.
-            if !matches!(i.code(), Code::Mov_r32_rm32 | Code::Lea_r32_m)
+            if !matches!(i.code(), Code::Mov_r32_rm32 | Code::Add_r32_rm32 | Code::Lea_r32_m)
                 || i.op1_kind() != OpKind::Memory
                 || i.memory_index() != Register::None
                 || i.segment_prefix() != Register::None
@@ -343,7 +343,7 @@ impl Linked {
             let raw_value = i.memory_displacement32();
             let address = base.wrapping_add(raw_value) as u64;
             let target = match i.code() {
-                Code::Mov_r32_rm32 => slots.get(&address).cloned(),
+                Code::Mov_r32_rm32 | Code::Add_r32_rm32 => slots.get(&address).cloned(),
                 Code::Lea_r32_m => {
                     index.resolve(address).map(|(symbol, addend)| RecoveredTarget::GotRelative {
                         name: symbol.name.clone(),

@@ -28,3 +28,8 @@ interior addends, register copies, negative/zero displacements, differing opcode
 widths and targets, clobbers, ambiguous merges, missing symbols and alias fallbacks.
 Direct addresses and pointer loads remain distinct even when they name the same
 symbol. Tests also verify that recovery defaults on and can be explicitly disabled.
+
+The `add_*` functions cover memory-source ADD from GOT slots, while rejecting
+memory-destination ADD, indexed operands and direct object-content reads. Changing
+the target, addend, opcode, register or width still mismatches; an ADD that overwrites
+the base invalidates subsequent GOT tracking.

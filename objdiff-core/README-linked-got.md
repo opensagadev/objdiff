@@ -34,8 +34,8 @@ Recovered operands participate in the normal instruction argument comparison,
 diff rows, and scoring. Even identical instruction bytes are compared symbolically
 when recovery found a reference: identical displacements can address different
 symbols in different libraries. Register operands, opcode, prefixes, and other
-arguments still participate. Recovery supports 32-bit pointer loads and 32-bit
-LEA direct addresses. Changing their width or replacing MOV with LEA still produces
+arguments still participate. Recovery supports 32-bit MOV and ADD memory-source operands that read GOT slots,
+and 32-bit LEA direct addresses. Changing their width or replacing MOV with LEA still produces
 a mismatch; semantic reference recovery does not erase opcode differences.
 
 Symbol-name normalization uses the existing object-loader normalization function.
@@ -226,3 +226,39 @@ These are semantic matches, not byte identity.
 `NuPadSetMotors` retains a numeric mismatch for a direct MOV from object contents
 outside the GOT. Direct memory loads/stores outside GOT slots remain unsupported;
 this extension recovers LEA address calculations only.
+
+## ADD GOT-slot operands
+
+The existing `x86.recoverLinkedGot` setting (default true) also covers
+`add r32, [proven_got_base + displacement]`. The source must resolve to a supported
+four-byte GOT slot. It uses the same `GotSlot` reference as MOV, while the ADD
+opcode and destination register remain part of comparison. No arbitrary arithmetic
+constants or loads from object contents are normalized. The existing write tracking
+invalidates the destination's GOT-base fact, including when ADD overwrites its own
+base register. Indexed operands, other widths, and memory-destination ADD remain
+numeric.
+
+Synthetic tests cover named and relative slots, symbol-relative addends, register
+copies, destination/base clobbers, changed symbol/addend/register/opcode/width,
+flags consumed after ADD, identical bytes with different slot targets, all four
+formatters, and disabled recovery. `cargo test` passes 72 tests (16 in the linked-GOT
+integration suite); formatting, workspace clippy, no_std x86, and debug/release
+builds pass.
+
+Fresh temporary Saga snapshots independently resolved with readelf/objdump show
+`ShaderManagerOpenGL::setElementsfv_transpose` reading `g_shaderUniforms`:
+
+| | Original | Rebuilt |
+|---|---|---|
+| ADD instruction | `0x30e0b5` | `0x240645` |
+| GOT base | `0x616870` | `0x40fd10` |
+| Displacement | `-0x1ea0` | `-0x14d8` |
+| GOT slot | `0x6149d0` | `0x40e838` |
+| R_386_RELATIVE link-time pointer | `0x6349c0` | `0x44ba20` |
+| Symbol | `g_shaderUniforms` | `g_shaderUniforms` |
+
+The workspace release CLI now displays `add eax, [ebx+GOT(g_shaderUniforms)]` on
+both sides and reports 100% (previously 99.947365%). This is a semantic match of
+the symbolic source operand; it does not make the instruction bytes identical.
+A separate check of `cbPtlChangePriority` retains its substantive differences and
+22% score despite recovering its ADD source as `GOT(edpp_ptls)`.

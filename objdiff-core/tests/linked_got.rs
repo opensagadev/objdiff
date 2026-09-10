@@ -213,15 +213,14 @@ fn identical_bytes_still_compare_symbol_identity() {
         let address = file.symbol_by_name("other").unwrap().address() as u32;
         data[offset..offset + 4].copy_from_slice(&address.to_le_bytes());
     });
-    assert_ne!(
-        refs(&left, &config, "relative")[1].target,
-        refs(&right, &config, "relative")[1].target
-    );
-    let li = left.symbol_by_name("relative").unwrap();
-    let ri = right.symbol_by_name("relative").unwrap();
-    let (ld, _) = diff::code::diff_code(&left, &right, li, ri, &config).unwrap();
-    assert_eq!(ld.instruction_rows[2].kind, InstructionDiffKind::ArgMismatch);
-    assert_eq!(left.symbol_data(li), right.symbol_data(ri));
+    for name in ["relative", "add_slot"] {
+        assert_ne!(refs(&left, &config, name)[1].target, refs(&right, &config, name)[1].target);
+        let li = left.symbol_by_name(name).unwrap();
+        let ri = right.symbol_by_name(name).unwrap();
+        let (ld, _) = diff::code::diff_code(&left, &right, li, ri, &config).unwrap();
+        assert_eq!(ld.instruction_rows[2].kind, InstructionDiffKind::ArgMismatch);
+        assert_eq!(left.symbol_data(li), right.symbol_data(ri));
+    }
 }
 
 #[test]
@@ -335,7 +334,9 @@ fn all_formatters_emit_symbolic_operands_and_raw_hover() {
         diff::X86Formatter::Nasm,
     ] {
         config.x86_formatter = formatter;
-        assert_eq!(refs(&object, &config, "relative").len(), 2, "{formatter:?}");
+        for name in ["relative", "add_slot"] {
+            assert_eq!(refs(&object, &config, name).len(), 2, "{formatter:?}: {name}");
+        }
     }
     let index = object.symbol_by_name("relative").unwrap();
     let instructions = args(&object, &config, "relative");
@@ -522,5 +523,63 @@ fn identical_lea_bytes_still_check_direct_symbol_identity() {
     let ri = right.symbol_by_name("direct_address").unwrap();
     assert_eq!(left.symbol_data(li), right.symbol_data(ri));
     let (ld, _) = diff::code::diff_code(&left, &right, li, ri, &config).unwrap();
+    assert_eq!(ld.instruction_rows[2].kind, InstructionDiffKind::ArgMismatch);
+}
+
+#[test]
+fn add_got_slots_preserve_arithmetic_and_register_tracking() {
+    let (left, config) = load(false, true);
+    let (right, _) = load(true, true);
+    for name in ["add_slot", "add_named", "add_interior", "add_copied"] {
+        let l = refs(&left, &config, name);
+        let r = refs(&right, &config, name);
+        assert_eq!(l.len(), 2, "{name}");
+        assert_eq!(r.len(), 2, "{name}");
+        assert!(matches!(l[1].target, RecoveredTarget::GotSlot { .. }));
+        assert!(l[1].matches(&r[1]));
+        let li = left.symbol_by_name(name).unwrap();
+        let (ld, _) =
+            diff::code::diff_code(&left, &right, li, right.symbol_by_name(name).unwrap(), &config)
+                .unwrap();
+        assert_eq!(ld.match_percent, Some(100.0), "{name}");
+        assert!(common::display_diff(&left, &ld, li, &config).contains("GOT("));
+    }
+    let ins = args(&left, &config, "add_kills_base");
+    assert!(ins[2].args.iter().any(|a| matches!(a, InstructionArg::Recovered(_))));
+    assert!(!ins[3].args.iter().any(|a| matches!(a, InstructionArg::Recovered(_))));
+    for name in ["add_overwritten", "add_indexed", "add_store", "add_direct"] {
+        assert!(
+            refs(&left, &config, name).iter().all(|r| r.target == RecoveredTarget::GotBase),
+            "{name}"
+        );
+    }
+    for name in [
+        "add_different_symbol",
+        "add_different_addend",
+        "add_different_register",
+        "add_different_opcode",
+        "add_different_width",
+    ] {
+        let (ld, _) = diff::code::diff_code(
+            &left,
+            &right,
+            left.symbol_by_name(name).unwrap(),
+            right.symbol_by_name(name).unwrap(),
+            &config,
+        )
+        .unwrap();
+        assert_ne!(ld.instruction_rows[2].kind, InstructionDiffKind::None, "{name}");
+    }
+    let (left, disabled) = load(false, false);
+    let (right, _) = load(true, false);
+    assert!(refs(&left, &disabled, "add_slot").is_empty());
+    let (ld, _) = diff::code::diff_code(
+        &left,
+        &right,
+        left.symbol_by_name("add_slot").unwrap(),
+        right.symbol_by_name("add_slot").unwrap(),
+        &disabled,
+    )
+    .unwrap();
     assert_eq!(ld.instruction_rows[2].kind, InstructionDiffKind::ArgMismatch);
 }

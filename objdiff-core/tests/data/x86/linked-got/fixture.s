@@ -229,6 +229,77 @@ begin direct_kills_base
     lea object@GOTOFF(%ebx), %edx
 end direct_kills_base
 
+# ADD reads the pointer in the slot; it must retain its arithmetic semantics.
+begin add_slot
+    add slot@GOTOFF(%ebx), %eax
+    jc 1f
+    inc %edx
+1:
+end add_slot
+begin add_named
+    add external@GOT(%ebx), %eax
+end add_named
+begin add_interior
+    add inside@GOTOFF(%ebx), %eax
+end add_interior
+begin add_copied
+    mov %ebx, %esi
+    xor %ebx, %ebx
+    add slot@GOTOFF(%esi), %eax
+end add_copied
+begin add_kills_base
+    add slot@GOTOFF(%ebx), %ebx
+    mov slot@GOTOFF(%ebx), %eax
+end add_kills_base
+begin add_overwritten
+    xor %ebx, %ebx
+    add slot@GOTOFF(%ebx), %eax
+end add_overwritten
+begin add_indexed
+    add slot@GOTOFF(%ebx,%ecx,4), %eax
+end add_indexed
+begin add_store
+    add %eax, slot@GOTOFF(%ebx)
+end add_store
+begin add_direct
+    add object@GOTOFF(%ebx), %eax
+end add_direct
+begin add_different_symbol
+.if RIGHT
+    add other_slot@GOTOFF(%ebx), %eax
+.else
+    add slot@GOTOFF(%ebx), %eax
+.endif
+end add_different_symbol
+begin add_different_addend
+.if RIGHT
+    add inside@GOTOFF(%ebx), %eax
+.else
+    add slot@GOTOFF(%ebx), %eax
+.endif
+end add_different_addend
+begin add_different_register
+.if RIGHT
+    add slot@GOTOFF(%ebx), %edx
+.else
+    add slot@GOTOFF(%ebx), %eax
+.endif
+end add_different_register
+begin add_different_opcode
+.if RIGHT
+    mov slot@GOTOFF(%ebx), %eax
+.else
+    add slot@GOTOFF(%ebx), %eax
+.endif
+end add_different_opcode
+begin add_different_width
+.if RIGHT
+    add slot@GOTOFF(%ebx), %ax
+.else
+    add slot@GOTOFF(%ebx), %eax
+.endif
+end add_different_width
+
 .macro thunk suffix, reg
 .type thunk_\suffix,@function
 thunk_\suffix:
